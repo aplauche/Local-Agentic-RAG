@@ -7,50 +7,103 @@ from get_embedding_function import get_embedding_function
 
 CHROMA_PATH = "chroma"
 
-PROMPT_TEMPLATE = """
-Answer the question based only on the following context:
+RAG_PROMPT = """
+You are a helpful assistant. Use the retrieved context and prior conversation
+to answer the user's latest question. Be concise and cite sources if relevant.
 
+Context:
 {context}
 
----
+Conversation so far:
+{history}
 
-Answer the question based on the above context: {question}
+User's question:
+{question}
+
+Answer:
 """
 
+REWRITE_PROMPT = """
+You are a query rewriter. Your job is to rewrite ONLY the user's *latest question*
+into a standalone, fully self-contained query that can be used for document retrieval.
 
-def main():
-    # Create CLI.
-    parser = argparse.ArgumentParser()
-    parser.add_argument("query_text", type=str, help="The query text.")
-    args = parser.parse_args()
-    query_text = args.query_text
-    query_rag(query_text)
+Use prior conversation *only as background context*, but always make sure the 
+rewritten query reflects the LATEST user question — not earlier ones.
+
+Prior conversation (for background only):
+{history}
+
+LATEST user question: {question}
+
+FOR EXAMPLE:
+Conversation: 
+User: Who wrote The Hobbit?
+Assistant: J.R.R. Tolkien.
+Latest question: When was it published?
+Rewritten query: When was The Hobbit published?
+
+Rewritten standalone query:
+"""
+def build_prompt(history, context, question):
+    history_str = "\n".join([f"User: {h['question']}\nAssistant: {h['answer']}" for h in history])
+    prompt_template = ChatPromptTemplate.from_template(RAG_PROMPT)
+    return prompt_template.format(context=context, history=history_str, question=question)
 
 
-def query_rag(query_text: str):
-    # Prepare the DB.
+def rewrite_query(model, history, question):
+    short_history = history[-2:]
+    history_str = "\n".join([f"User: {h['question']}\nAssistant: {h['answer']}" for h in short_history])
+    prompt_template = ChatPromptTemplate.from_template(REWRITE_PROMPT)
+    prompt = prompt_template.format(history=history_str, question=question)
+
+    return model.invoke(prompt).strip()
+
+
+def run_chat():
+    # Prepare the DB once
     embedding_function = get_embedding_function()
     db = Chroma(persist_directory=CHROMA_PATH, embedding_function=embedding_function)
-
-    # Search the DB. Include K results
-    results = db.similarity_search_with_score(query_text, k=5)
-
-    # Build the prompt using template
-    context_text = "\n\n---\n\n".join([doc.page_content for doc, _score in results])
-    prompt_template = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
-    prompt = prompt_template.format(context=context_text, question=query_text)
-    
-    # Optional debugging
-    # print(prompt)
-
     model = Ollama(model="qwen2:7b")
-    response_text = model.invoke(prompt)
 
-    sources = [doc.metadata.get("id", None) for doc, _score in results]
-    formatted_response = f"Response: {response_text}\nSources: {sources}"
-    print(formatted_response)
-    return response_text
+    history = []
+
+    print("💬 Agentic RAG Chat. Type 'exit' to quit.\n")
+    while True:
+        query_text = input("You: ").strip()
+        if query_text.lower() in ["exit", "quit", "q"]:
+            print("👋 Goodbye!")
+            break
+
+        # Step 1: Rewrite query for retrieval
+        retrieval_query = rewrite_query(model, history, query_text)
+
+        print("Rephrased Q")
+        print(retrieval_query)
+        print('=' * 50)
+
+        # Step 2: Retrieve context with rewritten query
+        results = db.similarity_search_with_score(retrieval_query, k=5)
+        context_text = "\n\n---\n\n".join([doc.page_content for doc, _ in results])
+        sources = [doc.metadata.get("id", None) for doc, _ in results]
+
+        # Step 3: Build final answer prompt
+        prompt = build_prompt(history, context_text, query_text)
+
+        print("Final Prompt")
+        print(prompt)
+        print("=" * 50)
+
+        # Step 4: Model generates answer
+        response_text = model.invoke(prompt)
+
+        # Step 5: Save turn
+        history.append({"question": query_text, "answer": response_text})
+
+        # Print result
+        print(f"\nAssistant: {response_text}")
+        print('-' * 50)
+        print(f"Sources: {sources}\n")
 
 
 if __name__ == "__main__":
-    main()
+    run_chat()
