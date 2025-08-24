@@ -4,3 +4,4 @@ backup
 chroma
 data
 tests
+__pycache__
