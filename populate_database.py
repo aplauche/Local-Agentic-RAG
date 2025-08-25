@@ -6,6 +6,9 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.schema.document import Document
 from get_embedding_function import get_embedding_function
 from langchain.vectorstores.chroma import Chroma
+from langchain.document_loaders import TextLoader
+from langchain.document_loaders import UnstructuredHTMLLoader
+from langchain.document_loaders import PyPDFLoader
 
 
 CHROMA_PATH = "chroma"
@@ -23,14 +26,57 @@ def main():
         clear_database()
 
     # Create (or update) the data store.
-    documents = load_documents()
+    # documents = load_documents()
+    documents = load_documents_from_directory(DATA_PATH)
     chunks = split_documents(documents)
     add_to_chroma(chunks)
 
 
-def load_documents():
-    document_loader = PyPDFDirectoryLoader(DATA_PATH)
-    return document_loader.load()
+# def load_documents():
+#     document_loader = PyPDFDirectoryLoader(DATA_PATH)
+#     return document_loader.load()
+
+# def load_blog_posts():
+#     directory = "blog_posts"
+#     documents = []
+
+#     for filename in os.listdir(directory):
+#         if filename.endswith(".txt"):
+#             loader = TextLoader(os.path.join(directory, filename), encoding='utf-8')
+#             documents.extend(loader.load())
+#     return documents
+
+def load_documents_from_directory(directory, recursive=False):
+    supported_extensions = {
+        ".pdf": PyPDFLoader,
+        ".txt": lambda path: TextLoader(path, encoding='utf-8'),
+        ".html": UnstructuredHTMLLoader,
+    }
+
+    documents = []
+
+    for root, _, files in os.walk(directory):
+        for filename in files:
+            filepath = os.path.join(root, filename)
+            ext = os.path.splitext(filename)[1].lower()
+
+            loader_cls = supported_extensions.get(ext)
+            if loader_cls:
+                try:
+                    print(f"[+] Loading: {filepath}")
+                    loader = loader_cls(filepath)
+                    docs = loader.load()
+                    documents.extend(docs)
+                except Exception as e:
+                    print(f"[!] Failed to load {filepath}: {e}")
+            else:
+                print(f"[~] Skipping unsupported file: {filename}")
+
+        if not recursive:
+            break
+
+    return documents
+
 
 
 def split_documents(documents: list[Document]):
